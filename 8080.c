@@ -41,7 +41,6 @@ void cpu_8080_init(Intel8080 *cpu, uint8_t *mem, uint16_t mem_size)
     cpu->L = 0;
     cpu->PC = 0;
     cpu->SP = 0;
-    // flags
     cpu->SF = 0;
     cpu->ZF = 0;
     cpu->AF = 0;
@@ -144,10 +143,10 @@ void cpu_8080_reset(Intel8080 *cpu)
                 break;
             case 0x80: // ADD B
                 cpu->cycle_count += 4;
-                cpu->A = cpu->A + cpu->B;
-                cpu->SF = cpu->A & 0x80;
-                cpu->ZF = cpu->A == 0;
                 cpu->CF = ((uint16_t)cpu->A + (uint16_t)cpu->B) > 255;
+                cpu->A = cpu->A + cpu->B;
+                cpu->SF = (cpu->A & 0x80) > 1;
+                cpu->ZF = cpu->A == 0;
                 printf("\033[33;1m%s\033[m\n", "ADD B");
                 break;
             default:
@@ -176,16 +175,7 @@ int main(int argc, char **argv)
     }
 
     int num1 = atoi(argv[1]);
-    if (num1 < -128 || num1 > 127) {
-        fprintf(stderr, "argument out of range: %d\n", num1);
-        return 1;
-    }
-
     int num2 = atoi(argv[2]);
-    if (num2 < -128 || num2 > 127) {
-        fprintf(stderr, "argument out of range: %d\n", num2);
-        return 1;
-    }
 
     uint8_t program[] = {
         0x3a, 0x10, 0x00,   // LDA 0010h
@@ -203,14 +193,13 @@ int main(int argc, char **argv)
     uint8_t *mem = xmalloc(MAX_8080_RAM);
     memcpy(mem, program, sizeof(program));
 
-    mem[0x0010] = num1;
-    mem[0x0011] = num2;
+    mem[0x0010] = (uint8_t)num1;
+    mem[0x0011] = (uint8_t)num2;
 
     Intel8080 cpu = {0};
     cpu_8080_init(&cpu, mem, (uint16_t)MAX_8080_RAM);
     cpu_8080_reset(&cpu);
 
-    assert(mem[0x0012] == 42);
     printf("%d\n", mem[0x0012]);
 
     return 0;
