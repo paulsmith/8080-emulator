@@ -1,0 +1,29 @@
+8080 emulator
+=============
+
+Registers
+A
+B
+C
+D
+E
+H
+L
+PC
+SP
+
+Flags
+
+8080 characteristics
+ * 64K max
+ * Stack pointer
+ * 16-bit register pairs (BC, DE, HL, PSW (A + flags))
+ * Addressing modes
+    * direct
+    * register pair (HL, (loads and stores with BC & DE))
+    * immediate
+
+
+Features
+ * Count cycles
+ * I/O
