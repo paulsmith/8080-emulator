@@ -4,6 +4,11 @@
 #include <stdbool.h>
 #include <assert.h>
 #include <string.h>
+#include <fcntl.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#include <sys/mman.h>
 
 const int MAX_8080_RAM = (1 << 16) - 1;
 
@@ -169,38 +174,49 @@ void *xmalloc(size_t size)
 
 int main(int argc, char **argv)
 {
-    if (argc != 3) {
-        fprintf(stderr, "Usage: %s num1 num2\n", argv[0]);
+    if (argc != 2) {
+        fprintf(stderr, "Usage: %s rom\n", argv[0]);
         return 1;
     }
 
-    int num1 = atoi(argv[1]);
-    int num2 = atoi(argv[2]);
+    char *pathname = argv[1];
+    int fd = open(pathname, O_RDONLY);
+    if (fd == -1) {
+        perror("opening rom file");
+        return 1;
+    }
 
-    uint8_t program[] = {
-        0x3a, 0x10, 0x00,   // LDA 0010h
-        0x47,               // MOV B, A
-        0x3a, 0x11, 0x00,   // LDA 0011h
-        0x80,               // ADD B
-        0x32, 0x12, 0x00,   // STA 0012h
-        0x76,               // HLT
-        0x00,               // NOP
-        0x00,               // NOP
-        0x00,               // NOP
-        0x00,               // NOP
-    };
+    struct stat statbuf;
+    if (fstat(fd, &statbuf) == -1) {
+        perror("fstat on rom file");
+        return 1;
+    }
+
+    if (statbuf.st_size > MAX_8080_RAM) {
+        fprintf(stderr, "can only address 64KB RAM\n");
+        return 1;
+    }
+
+    uint16_t rom_length = statbuf.st_size;
+
+    void *rom_contents = mmap(NULL, rom_length, PROT_READ | PROT_WRITE, MAP_PRIVATE, fd, 0);
+    if (rom_contents == MAP_FAILED) {
+        perror("mmap on rom file");
+        return 1;
+    }
 
     uint8_t *mem = xmalloc(MAX_8080_RAM);
-    memcpy(mem, program, sizeof(program));
-
-    mem[0x0010] = (uint8_t)num1;
-    mem[0x0011] = (uint8_t)num2;
+    memcpy(mem, rom_contents, rom_length);
 
     Intel8080 cpu = {0};
     cpu_8080_init(&cpu, mem, (uint16_t)MAX_8080_RAM);
     cpu_8080_reset(&cpu);
 
+    // TODO: replace with output
     printf("%d\n", mem[0x0012]);
+
+    munmap(rom_contents, rom_length);
+    close(fd);
 
     return 0;
 }
