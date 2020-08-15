@@ -10,7 +10,54 @@
 #include <unistd.h>
 #include <sys/mman.h>
 
+/*
+ * Memory map
+ * 0x0000 - 0x1FFF -- ROM
+ * 0x2000 - 0x7FFF -- RAM
+ * 0x8000 - 0xFFFF -- I/O
+ */
+
+#define MEM_MAP_IO_READ  0xD000
+#define MEM_MAP_IO_WRITE 0xD001
+
 const int MAX_8080_RAM = (1 << 16) - 1;
+
+typedef union RegisterPair {
+    struct {
+        uint8_t H;
+        uint8_t L;
+    } Pair;
+    uint16_t HL;
+} RegisterPair;
+
+typedef struct Bus {
+    uint8_t *mem; // not owned
+} Bus;
+
+uint8_t bus_read(Bus *bus, uint16_t addr)
+{
+    if (addr == MEM_MAP_IO_READ) {
+        int input_byte = getchar();
+        if (input_byte == EOF) {
+            fprintf(stderr, "got EOF\n");
+            exit(1); // FIXME
+        }
+        return (uint8_t)input_byte;
+    }
+    uint8_t result = bus->mem[addr];
+    return result;
+}
+
+void bus_write(Bus *bus, uint16_t addr, uint8_t val)
+{
+    if (addr == MEM_MAP_IO_WRITE) {
+        puts("\033[32m");
+        putchar((int)val);
+        puts("\033[0m");
+    } else {
+        bus->mem[addr] = val;
+    }
+}
 
 typedef struct Intel8080 {
     uint8_t A;
@@ -28,13 +75,12 @@ typedef struct Intel8080 {
     uint8_t AF;
     uint8_t PF;
     uint8_t CF;
-    uint8_t *mem;
-    uint16_t mem_size;
+    Bus *bus;
     uint32_t cycle_count;
-    bool halted;
+    bool stopped;
 } Intel8080;
 
-void cpu_8080_init(Intel8080 *cpu, uint8_t *mem, uint16_t mem_size)
+void cpu_8080_init(Intel8080 *cpu, Bus *bus)
 {
     cpu->A = 0;
     cpu->B = 0;
@@ -51,10 +97,9 @@ void cpu_8080_init(Intel8080 *cpu, uint8_t *mem, uint16_t mem_size)
     cpu->AF = 0;
     cpu->PF = 0;
     cpu->CF = 0;
-    cpu->mem = mem;
-    cpu->mem_size = mem_size;
+    cpu->bus = bus;
     cpu->cycle_count = 0;
-    cpu->halted = false;
+    cpu->stopped = false;
 }
 
 #define UNIMPLEMENTED(op) { \
@@ -62,6 +107,7 @@ void cpu_8080_init(Intel8080 *cpu, uint8_t *mem, uint16_t mem_size)
     exit(1); \
 }
 
+#ifdef DUMP_STATE_EACH_CYCLE
 void cpu_8080_dump(Intel8080 *cpu)
 {
     printf("\033[36mPC=%02x A=%02x B=%02x C=%02x D=%02x E=%02x H=%02x L=%02x S=%d Z=%d A=%d P=%d C=%d\033[m\n",
@@ -82,13 +128,14 @@ void cpu_8080_dump(Intel8080 *cpu)
 
 void cpu_8080_dump_mem(Intel8080 *cpu, uint16_t start, uint16_t len)
 {
+    // TODO: ascii view
     for (int i = 0; i < len; i++) {
-        uint8_t val = *(cpu->mem + start + i);
-        int ansicol = 30;
+        uint8_t val = bus_read(cpu->bus, start + i);
+        int ansicol = 37; // white for zero
         if (val != 0) {
-            ansicol = 34;
+            ansicol = 34; // blue
         }
-        printf("\033[%d;1m%02x\033[m ", ansicol, val);
+        printf("\033[%dm%02x\033[m ", ansicol, val);
         if (i % 16 == 15) {
             printf("\n");
         }
@@ -96,69 +143,92 @@ void cpu_8080_dump_mem(Intel8080 *cpu, uint16_t start, uint16_t len)
     printf("\n");
 }
 
+#endif
+
+typedef struct Instruction {
+    int cycles;
+    char *inst;
+    int size;
+    void (*exec)(Intel8080 *cpu);
+} Instruction;
+
+Instruction instructions[] = {
+    {
+        4,
+        "NOP",
+        1,
+        NULL,
+    },
+};
+
+#include "mnemonics-table.inc"
+#include "sizes-table.inc"
+//TODO: count cycles
+//#include "cycles-table.inc"
+
 void cpu_8080_reset(Intel8080 *cpu)
 {
     cpu->PC = 0;
-    while (!cpu->halted) {
-        assert(cpu->PC < cpu->mem_size);
+    uint16_t addr;
+    while (!cpu->stopped) {
         // FETCH INSTRUCTION
-        uint8_t op = cpu->mem[cpu->PC];
-        // ADVANCE PC
-        cpu->PC += 1;
+        uint8_t op = bus_read(cpu->bus, cpu->PC);
         // DECODE INSTRUCTION
+        const char *mnemonic = mnemonics_8080[op];
+        printf("\033[33;1m%s\033[0m\n", mnemonic);
+        // ADVANCE PC
+        uint8_t size = inst_sizes_8080[op];
+        cpu->PC += 1;
+        size -= 1;
+        addr = 0;
+        switch (size) {
+            case 0:
+                break;
+            case 1:
+                addr = (uint16_t)bus_read(cpu->bus, cpu->PC + 1);
+                cpu->PC += 1;
+                break;
+            case 2:
+                addr = (bus_read(cpu->bus, cpu->PC + 1) << 8) |
+                        bus_read(cpu->bus, cpu->PC + 0);
+                cpu->PC += 2;
+                break;
+            default:
+                // shouldn't get here
+                assert(false);
+        }
         // DISPATCH INSTRUCTION
         switch (op) {
             case 0x00: // NOP
             case 0x10: // NOP
             case 0x20: // NOP
             case 0x30: // NOP
-                cpu->cycle_count += 4;
                 break;
             case 0x32: // STA a16
-                cpu->cycle_count += 13;
-                {
-                    uint8_t lo = cpu->mem[cpu->PC + 0];
-                    uint8_t hi = cpu->mem[cpu->PC + 1];
-                    uint16_t addr = (hi << 8) | lo;
-                    cpu->mem[addr] = cpu->A;
-                    printf("\033[33;1m%s 0x%04x\033[m\n", "STA", addr);
-                }
-                cpu->PC += 2;
+                bus_write(cpu->bus, addr, cpu->A);
                 break;
             case 0x3a: // LDA a16
-                cpu->cycle_count += 13;
-                {
-                    uint8_t lo = cpu->mem[cpu->PC + 0];
-                    uint8_t hi = cpu->mem[cpu->PC + 1];
-                    uint16_t addr = (hi << 8) | lo;
-                    cpu->A = cpu->mem[addr];
-                    printf("\033[33;1m%s 0x%04x\033[m\n", "LDA", addr);
-                }
-                cpu->PC += 2;
+                cpu->A = bus_read(cpu->bus, addr);
                 break;
             case 0x47: // MOV B,A
-                cpu->cycle_count += 5;
                 cpu->B = cpu->A;
-                printf("\033[33;1m%s\033[m\n", "MOV B,A");
                 break;
             case 0x76: // HLT
-                cpu->cycle_count += 7;
-                cpu->halted = true;
-                printf("\033[33;1m%s\033[m\n", "HLT");
+                cpu->stopped = true;
                 break;
             case 0x80: // ADD B
-                cpu->cycle_count += 4;
                 cpu->CF = ((uint16_t)cpu->A + (uint16_t)cpu->B) > 255;
                 cpu->A = cpu->A + cpu->B;
                 cpu->SF = (cpu->A & 0x80) > 1;
                 cpu->ZF = cpu->A == 0;
-                printf("\033[33;1m%s\033[m\n", "ADD B");
                 break;
             default:
                 UNIMPLEMENTED(op);
         }
+#ifdef DUMP_STATE_EACH_CYCLE
         cpu_8080_dump(cpu);
         cpu_8080_dump_mem(cpu, 0, 0x20);
+#endif
     }
 }
 
@@ -208,13 +278,13 @@ int main(int argc, char **argv)
     uint8_t *mem = xmalloc(MAX_8080_RAM);
     memcpy(mem, rom_contents, rom_length);
 
+    Bus bus = {0};
+    bus.mem = mem;
     Intel8080 cpu = {0};
-    cpu_8080_init(&cpu, mem, (uint16_t)MAX_8080_RAM);
+    cpu_8080_init(&cpu, &bus);
     cpu_8080_reset(&cpu);
 
-    // TODO: replace with output
-    printf("%d\n", mem[0x0012]);
-
+    free(mem);
     munmap(rom_contents, rom_length);
     close(fd);
 

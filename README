@@ -27,3 +27,7 @@ Flags
 Features
  * Count cycles
  * I/O
+
+References
+ * https://www.pastraiser.com/cpu/i8080/i8080_opcodes.html
+ * https://k1.spdns.de/Develop/Projects/zasm/Documentation/z86.htm#A
