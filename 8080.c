@@ -145,26 +145,65 @@ void cpu_8080_dump_mem(Intel8080 *cpu, uint16_t start, uint16_t len)
 
 #endif
 
-typedef struct Instruction {
-    int cycles;
-    char *inst;
-    int size;
-    void (*exec)(Intel8080 *cpu);
-} Instruction;
-
-Instruction instructions[] = {
-    {
-        4,
-        "NOP",
-        1,
-        NULL,
-    },
-};
-
 #include "mnemonics-table.inc"
 #include "sizes-table.inc"
 //TODO: count cycles
 //#include "cycles-table.inc"
+
+typedef struct InstInfo {
+    Intel8080 *cpu;
+    uint16_t addr;
+} InstInfo;
+
+typedef void (*InstFn)(InstInfo);
+
+// START implementations of instructions as function pointers
+
+// 0x00: NOP
+void inst_nop(InstInfo info) { (void)info; }
+
+// 0x32: STA addr
+void inst_sta(InstInfo info) {
+    bus_write(info.cpu->bus, info.addr, info.cpu->A);
+}
+
+// 0x3a: LDA addr
+void inst_lda(InstInfo info) {
+    info.cpu->A = bus_read(info.cpu->bus, info.addr);
+}
+
+// 0x47: MOV B,A
+void inst_mov_b_a(InstInfo info) {
+    info.cpu->B = info.cpu->A;
+}
+
+// 0x76: HLT
+void inst_hlt(InstInfo info) {
+    info.cpu->stopped = true;
+}
+
+// 0x80: ADD B
+void inst_add_b(InstInfo info) {
+    Intel8080 *cpu = info.cpu;
+    cpu->CF = ((uint16_t)cpu->A + (uint16_t)cpu->B) > 255;
+    cpu->A = cpu->A + cpu->B;
+    cpu->SF = (cpu->A & 0x80) > 1;
+    cpu->ZF = cpu->A == 0;
+}
+
+InstFn inst_fns[256] = {
+    [0x00] = inst_nop,
+    [0x10] = inst_nop,
+    [0x20] = inst_nop,
+    [0x30] = inst_nop,
+    [0x32] = inst_sta,
+    [0x3a] = inst_lda,
+    [0x47] = inst_mov_b_a,
+    [0x76] = inst_hlt,
+    [0x80] = inst_add_b,
+};
+
+// END instructions
 
 void cpu_8080_reset(Intel8080 *cpu)
 {
@@ -198,33 +237,12 @@ void cpu_8080_reset(Intel8080 *cpu)
                 assert(false);
         }
         // DISPATCH INSTRUCTION
-        switch (op) {
-            case 0x00: // NOP
-            case 0x10: // NOP
-            case 0x20: // NOP
-            case 0x30: // NOP
-                break;
-            case 0x32: // STA a16
-                bus_write(cpu->bus, addr, cpu->A);
-                break;
-            case 0x3a: // LDA a16
-                cpu->A = bus_read(cpu->bus, addr);
-                break;
-            case 0x47: // MOV B,A
-                cpu->B = cpu->A;
-                break;
-            case 0x76: // HLT
-                cpu->stopped = true;
-                break;
-            case 0x80: // ADD B
-                cpu->CF = ((uint16_t)cpu->A + (uint16_t)cpu->B) > 255;
-                cpu->A = cpu->A + cpu->B;
-                cpu->SF = (cpu->A & 0x80) > 1;
-                cpu->ZF = cpu->A == 0;
-                break;
-            default:
-                UNIMPLEMENTED(op);
-        }
+        InstFn inst_fn = inst_fns[op];
+        //TODO: handle unimplemented
+        InstInfo info = {0};
+        info.cpu = cpu;
+        info.addr = addr;
+        inst_fn(info);
 #ifdef DUMP_STATE_EACH_CYCLE
         cpu_8080_dump(cpu);
         cpu_8080_dump_mem(cpu, 0, 0x20);
